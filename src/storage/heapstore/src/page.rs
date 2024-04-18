@@ -30,7 +30,11 @@ impl Page {
     /// HINT: To convert a variable x to bytes using little endian, use
     /// x.to_le_bytes()
     pub fn new(page_id: PageId) -> Self {
-        todo!("Your code here")
+        let mut data = [0; PAGE_SIZE];
+        let id = page_id.to_le_bytes();
+        
+        data[0..2].copy_from_slice(&id);
+        Page { data }
     }
 
     /// Return the page id for a page
@@ -39,19 +43,23 @@ impl Page {
     /// (the example is for a u16 type and the data store in little endian)
     /// u16::from_le_bytes(data[X..Y].try_into().unwrap());
     pub fn get_page_id(&self) -> PageId {
-        todo!("Your code here")
+        let id_bytes = u16::from_le_bytes(self.data[0..2].try_into().unwrap());
+        return id_bytes;
     }
 
     /// Create a page from a byte array
     #[allow(dead_code)]
     pub fn from_bytes(data: [u8; PAGE_SIZE]) -> Self {
-        todo!("Your code here")
+        // let whole_page = self.data.concat(&data);
+        Page {
+            data: data
+        }
     }
 
     /// Get a reference to the bytes of the page
     ///
     pub fn to_bytes(&self) -> &[u8; PAGE_SIZE] {
-        todo!("Your code here")
+        return &self.data;
     }
 
     /// Utility function for comparing the bytes of another page.
