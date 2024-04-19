@@ -38,9 +38,9 @@ impl HeapPage for Page {
     /// They must have the same size.
     /// self.data[X..y].clone_from_slice(&bytes);
     fn add_value(&mut self, bytes: &[u8]) -> Option<SlotId> {
-        // Getting the new slot id and updating number of slots
+        // Getting information for the new slot along with current header
+        // metadata.
         let new_num_slots = (self.get_num_slots() + 1) as SlotId;
-
         let slot_id = self.get_next_id();
         let len = bytes.len();
         let slot_len = (len as SlotId).to_le_bytes();
@@ -49,15 +49,15 @@ impl HeapPage for Page {
         let offset = self.get_offset();
         let slot_offset = (offset as Offset).to_le_bytes();
 
+        // Add new slot only if there is enough free space
         if free_space >= (len + 6) {
-            let mut slot_metadata = [0; 6];
-            slot_metadata[..2].copy_from_slice(&slot_id.to_le_bytes());
-            slot_metadata[2..4].copy_from_slice(&slot_len);
-            slot_metadata[4..6].copy_from_slice(&slot_offset);
             // Update header with new slot metadata
-            let new_offset = ((offset - len) as Offset).to_le_bytes();
+            self.data[header_end..header_end + 2].copy_from_slice(&slot_id.to_le_bytes());
+            self.data[header_end + 2..header_end + 4].copy_from_slice(&slot_len);
+            self.data[header_end + 4..header_end + 6].copy_from_slice(&slot_offset);
 
-            self.data[header_end..][..slot_metadata.len()].copy_from_slice(&slot_metadata);
+            // Update page metadata
+            let new_offset = ((offset - len) as Offset).to_le_bytes();
             self.data[2..4].copy_from_slice(&new_num_slots.to_le_bytes());
             self.data[4..6].copy_from_slice(&new_offset);
 
@@ -74,13 +74,17 @@ impl HeapPage for Page {
         let slots_start = 8_usize;
         let slots_end = self.get_header_size();
 
+        // Iterate through all slot metadata to find slotId
         for i in (slots_start..slots_end).step_by(6) {
+            // If there are currently no stored slots
             if slots_start == slots_end {
                 break;
             }
 
+            // Slot id for the current index
             let cur_id = u16::from_le_bytes(self.data[i..i + 2].try_into().unwrap());
 
+            // Get data and return bytes if current index matches slotId
             if cur_id == slot_id {
                 let slot_len = u16::from_le_bytes(self.data[i + 2..i + 4].try_into().unwrap());
                 let slot_offset = u16::from_le_bytes(self.data[i + 4..i + 6].try_into().unwrap());
@@ -100,15 +104,18 @@ impl HeapPage for Page {
     /// The space for the value should be free to use for a later added value.
     /// HINT: Return Some(()) for a valid delete
     fn delete_value(&mut self, slot_id: SlotId) -> Option<()> {
+        // Calculate variables for where to start iterating
         let slots_start = 8_usize;
         let slots_end = self.get_header_size();
+        let body_start = self.get_header_size();
+
+        // Variables for found slotId
         let mut found = false;
         let new_num_slots = (self.get_num_slots() - 1) as SlotId;
         let mut new_slots_md = Vec::new();
         let mut slot_idx = usize::MAX;
         let mut removed_len = u16::MAX;
         let mut slot_offset = u16::MAX;
-        let body_start = self.get_header_size();
 
         // Edit slot metadata section of header
         for i in (slots_start..slots_end).step_by(6) {
@@ -117,19 +124,21 @@ impl HeapPage for Page {
             }
             let cur_id = u16::from_le_bytes(self.data[i..i + 2].try_into().unwrap());
             if cur_id == slot_id {
+                // Found slot to be deleted
                 found = true;
                 slot_idx = i;
                 removed_len = u16::from_le_bytes(self.data[i + 2..i + 4].try_into().unwrap());
                 slot_offset = u16::from_le_bytes(self.data[i + 4..i + 6].try_into().unwrap());
                 continue;
             } else if i > slot_idx {
+                // Storing slot metadata for all slots that need to be shifted
                 let new_offset =
                     u16::from_le_bytes(self.data[i + 4..i + 6].try_into().unwrap()) + removed_len;
                 new_slots_md.extend(&self.data[i..i + 4]);
                 new_slots_md.extend(&new_offset.to_le_bytes());
             } else {
-                let copy_data = self.data[i..i + 6].to_vec();
-                new_slots_md.extend(&copy_data);
+                // Storing slot metadata for slots before deleted value
+                new_slots_md.extend(&self.data[i..i + 6].to_vec());
             }
         }
 
@@ -144,9 +153,9 @@ impl HeapPage for Page {
         self.data[4..6].copy_from_slice(&page_offset.to_le_bytes());
         self.data[8..body_start - 6].copy_from_slice(&new_slots_md);
 
-        // Shift data
+        // Shift bytes data of all slots appearing before the deleted slot
+        // in the body of the page
         let shift_data = self.data[body_start..(slot_offset - removed_len) as usize].to_vec();
-
         self.data[body_start + (removed_len as usize)..(slot_offset as usize)]
             .copy_from_slice(&shift_data);
 
@@ -168,6 +177,8 @@ impl HeapPage for Page {
     fn get_free_space(&self) -> usize {
         let header = self.get_header_size();
         let offset = self.get_offset();
+
+        // To avoid negative overflow
         if header > offset {
             return 0;
         }
@@ -186,6 +197,7 @@ impl HeapPage for Page {
     fn get_offset(&self) -> usize {
         let mut offset = u16::from_le_bytes(self.data[4..6].try_into().unwrap());
         if self.get_header_size() == 8 {
+            // When there are no slots
             offset = 4096;
         }
         offset as usize
@@ -204,6 +216,7 @@ impl HeapPage for Page {
                 break;
             }
 
+            // Add all current slot ids to a set
             let cur_id = u16::from_le_bytes(self.data[i..i + 2].try_into().unwrap());
             id_set.insert(cur_id);
         }
@@ -234,6 +247,7 @@ impl Iterator for HeapPageIntoIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.slot_ids.is_empty() {
+            // Remove first item in slot_ids vector
             let slot_id = self.slot_ids.remove(0);
             let bytes = self.page.get_value(slot_id);
             Some((bytes.unwrap(), slot_id))
@@ -251,6 +265,7 @@ impl IntoIterator for Page {
     type IntoIter = HeapPageIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
+        // Start and end of slot metadata portion of the header
         let slots_start = 8_usize;
         let slots_end = self.get_header_size();
 
@@ -261,10 +276,12 @@ impl IntoIterator for Page {
                 break;
             }
 
+            // Adds all slot id from stored slots
             let cur_id = u16::from_le_bytes(self.data[i..i + 2].try_into().unwrap());
             ids.push(cur_id);
         }
 
+        // Sort from lowest to highest slotId value
         ids.sort();
 
         HeapPageIntoIter {

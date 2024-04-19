@@ -30,9 +30,9 @@ impl Page {
     /// HINT: To convert a variable x to bytes using little endian, use
     /// x.to_le_bytes()
     pub fn new(page_id: PageId) -> Self {
+        // Initialize data and copy in pageId
         let mut data = [0; PAGE_SIZE];
-        let id = page_id.to_le_bytes();
-        data[0..2].copy_from_slice(&id);
+        data[..2].copy_from_slice(&page_id.to_le_bytes());
         Page { data }
     }
 
