@@ -1,5 +1,5 @@
 [package]
-name = "common"
+name = "server"
 version = "0.1.0"
 authors = [
     "Aaron Elmore <aelmore@cs.uchicago.edu>",
@@ -10,18 +10,19 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-doctest = false
-
-
 [dependencies]
-csv="1.3"
+clap = {version = "4.4", features = ["derive"]}
+sqlparser = "0.41"
+csv = "1.3"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_cbor = "0.11"
-rand = "0.8"
 log = "0.4"
 env_logger = "0.10"
-itertools = "0.12"
-chrono = "0.4"
-regex = "1.5"
+tempfile = "3.2"
+common = { path = "../common" }
+storage = { path = "../storage" }
+txn_manager = { path = "../txn_manager"}
+queryexe = { path = "../queryexe"}
+optimizer = { path = "../optimizer"}
+index = { path = "../index"}
