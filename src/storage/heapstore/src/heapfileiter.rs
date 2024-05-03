@@ -95,6 +95,7 @@ impl Iterator for HeapFileIterator {
                 page_iter.slot_ids.drain(..idx);
                 self.slot_start = None;
             }
+            self.iter = Some(page_iter);
             return self.next();
         }
     }
