@@ -7,10 +7,12 @@ use common::storage_trait::StorageTrait;
 use common::testutil::gen_random_test_sm_dir;
 use common::PAGE_SIZE;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::hash::Hash;
+use std::path::{self, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::{fs, num};
+use std::fs::{File, OpenOptions};
 
 pub const STORAGE_DIR: &str = "heapstore";
 
@@ -21,6 +23,8 @@ pub struct StorageManager {
     pub storage_dir: PathBuf,
     /// Indicates if this is a temp StorageManager (for testing)
     is_temp: bool,
+    file_path: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>>,
+    // files: Arc<RwLock<HashMap<ContainerId, Arc<HeapFile>>>>,
 }
 
 /// The required functions in HeapStore's StorageManager that are specific for HeapFiles
@@ -34,7 +38,17 @@ impl StorageManager {
         _perm: Permissions,
         _pin: bool,
     ) -> Option<Page> {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        if let Some(file_path) = files.get(&container_id) {
+            let hf = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for get_page");
+
+            match hf.read_page_from_file(page_id) {
+                Ok(page) => Some(page),
+                Err(r) => None
+            }
+        } else {
+            None
+        }
     }
 
     /// Write a page
@@ -44,19 +58,39 @@ impl StorageManager {
         page: &Page,
         _tid: TransactionId,
     ) -> Result<(), CrustyError> {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        if let Some(file_path) = files.get(&container_id) {
+            let mut hf = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for write_page");
+            return hf.write_page_to_file(page);
+        } else {
+            return Err(CrustyError::CrustyError(format!(
+                "ContainerId {} not found in the SM",
+                container_id
+            )));
+        }
     }
 
     /// Get the number of pages for a container
     fn get_num_pages(&self, container_id: ContainerId) -> PageId {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        let file_path = files.get(&container_id).unwrap().clone();
+        let hf = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for get_num_pages");
+        hf.num_pages()
     }
 
     /// Test utility function for counting reads and writes served by the heap file.
     /// Can return 0,0 for invalid container_ids
     #[allow(dead_code)]
     pub(crate) fn get_hf_read_write_count(&self, container_id: ContainerId) -> (u16, u16) {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        if let Some(file_path) = files.get(&container_id) {
+            let hf = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for read_write_count");
+            let read = hf.read_count.load(Ordering::Relaxed);
+            let write = hf.write_count.load(Ordering::Relaxed);
+            (read, write)
+        } else {
+            (0, 0)
+        }
     }
 
     /// For testing
@@ -85,7 +119,20 @@ impl StorageTrait for StorageManager {
     /// For startup/shutdown: check the storage_dir for data persisted in shutdown() that you can
     /// use to populate this instance of the SM. Otherwise create a new one.
     fn new(storage_dir: &Path) -> Self {
-        panic!("TODO milestone hs");
+        let mut map_path = storage_dir.to_path_buf();
+        map_path.push("_map.ser");
+
+        let exists = map_path.try_exists().unwrap();
+
+        if exists {
+            let f = File::open(map_path).expect("could not map file");
+            let files = serde_cbor::from_reader(f).unwrap();
+            StorageManager { storage_dir: storage_dir.to_path_buf(), is_temp: false, file_path: files}
+        } else {
+            let file_hash: HashMap<u16, PathBuf> = HashMap::new();
+            let files = Arc::new(RwLock::new(file_hash));
+            StorageManager { storage_dir: storage_dir.to_path_buf(), is_temp: false, file_path: files}
+        }
     }
 
     /// Create a new storage manager for testing. There is no startup/shutdown logic here: it
@@ -93,7 +140,9 @@ impl StorageTrait for StorageManager {
     fn new_test_sm() -> Self {
         let storage_dir = gen_random_test_sm_dir();
         debug!("Making new temp storage_manager {:?}", storage_dir);
-        panic!("TODO milestone hs");
+        let file_hash: HashMap<u16, PathBuf> = HashMap::new();
+        let files = Arc::new(RwLock::new(file_hash));
+        StorageManager { storage_dir, is_temp: true, file_path: files}
     }
 
     /// Insert some bytes into a container for a particular value (e.g. record).
@@ -110,7 +159,46 @@ impl StorageTrait for StorageManager {
         if value.len() > PAGE_SIZE {
             panic!("Cannot handle inserting a value larger than the page size");
         }
-        panic!("TODO milestone hs");
+
+        let files = self.file_path.read().unwrap();
+        let file_path = files.get(&container_id).unwrap();
+        println!("{:?}", file_path);
+        let hf = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for insertion");
+
+        let num_pages = hf.num_pages();
+
+        let mut completed = false;
+        let mut slot_id = 0 as SlotId;
+        let mut page_id = 0 as PageId;
+
+        println!("{:?}", num_pages);
+
+        if num_pages > 0 {
+            for pid in 0..(num_pages-1) {
+                let mut page = hf.read_page_from_file(pid).expect("Error with reading pages");
+
+                if let Some(slot) = page.add_value(&value) {
+                    page_id = pid;
+                    slot_id = slot;
+                    completed = true;
+                    hf.write_page_to_file(&page);
+                    break;
+                }
+            }
+        }
+
+        if !completed {
+            page_id = num_pages;
+            let mut page = Page::new(page_id);
+            slot_id = page.add_value(&value).expect("Couldn't create page");
+            hf.write_page_to_file(&page);
+        }
+        return ValueId { 
+            container_id,
+            segment_id: None,
+            page_id: Some(page_id),
+            slot_id: Some(slot_id)
+        };
     }
 
     /// Insert some bytes into a container for vector of values (e.g. record).
@@ -131,7 +219,17 @@ impl StorageTrait for StorageManager {
 
     /// Delete the data for a value. If the valueID is not found it returns Ok() still.
     fn delete_value(&self, id: ValueId, tid: TransactionId) -> Result<(), CrustyError> {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        let file_path = files.get(&id.container_id).unwrap();
+        let hf = HeapFile::new(file_path.to_path_buf(), id.container_id).expect("Unable to create HF for deletion");
+        if let (Some(pid), Some(slot)) = (id.page_id, id.slot_id) {
+            let mut page = hf.read_page_from_file(pid)?;
+            page.delete_value(slot);
+            hf.write_page_to_file(&page)?;
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     /// Updates a value. Returns valueID on update (which may have changed). Error on failure
@@ -143,7 +241,8 @@ impl StorageTrait for StorageManager {
         id: ValueId,
         _tid: TransactionId,
     ) -> Result<ValueId, CrustyError> {
-        panic!("TODO milestone hs");
+        let _ = self.delete_value(id, _tid);
+        Ok(self.insert_value(id.container_id, value, _tid))
     }
 
     /// Create a new container to be stored.
@@ -163,7 +262,20 @@ impl StorageTrait for StorageManager {
         _container_type: common::ids::StateType,
         _dependencies: Option<Vec<ContainerId>>,
     ) -> Result<(), CrustyError> {
-        panic!("TODO milestone hs");
+        print!("Enter create_container\n");
+        let cont_str = container_id.to_string();
+        let path_name = format!("file{}.hf", cont_str);
+        let path = Path::new(&path_name);
+
+        let mut files = self.file_path.write().unwrap();
+        if files.contains_key(&container_id) {
+            return Err(CrustyError::CrustyError(
+                "Container already exists".to_string()
+            ));
+        } else {
+            files.insert(container_id, Arc::new(path.to_path_buf()));
+            Ok(())
+        }   
     }
 
     /// A wrapper function to call create container
@@ -174,7 +286,16 @@ impl StorageTrait for StorageManager {
     /// Remove the container and all stored values in the container.
     /// If the container is persisted remove the underlying files
     fn remove_container(&self, container_id: ContainerId) -> Result<(), CrustyError> {
-        panic!("TODO milestone hs");
+        let mut files = self.file_path.write().unwrap();
+        if let Some(path) = files.get(&container_id) {
+            fs::remove_file(path)?;
+            files.remove(&container_id);
+            Ok(())
+        } else {
+            Err(CrustyError::CrustyError(
+                "Container does not exist".to_string()
+            ))
+        }
     }
 
     /// Get an iterator that returns all valid records
@@ -184,7 +305,11 @@ impl StorageTrait for StorageManager {
         tid: TransactionId,
         _perm: Permissions,
     ) -> Self::ValIterator {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        let file_path = files.get(&container_id).unwrap();
+        let heap = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for iterator");
+        let hf = Arc::new(heap);
+        return HeapFileIterator::new(tid, hf);
     }
 
     fn get_iterator_from(
@@ -194,7 +319,11 @@ impl StorageTrait for StorageManager {
         _perm: Permissions,
         start: ValueId,
     ) -> Self::ValIterator {
-        panic!("TODO milestone hs");
+        let files = self.file_path.read().unwrap();
+        let file_path = files.get(&container_id).unwrap();
+        let heap = HeapFile::new(file_path.to_path_buf(), container_id).expect("Unable to create HF for iterator");
+        let hf = Arc::new(heap);
+        return HeapFileIterator::new_from(tid, hf, start);
     }
 
     /// Get the data for a particular ValueId. Error if does not exists
@@ -204,7 +333,18 @@ impl StorageTrait for StorageManager {
         tid: TransactionId,
         perm: Permissions,
     ) -> Result<Vec<u8>, CrustyError> {
-        panic!("TODO milestone hs");
+        let container_id = id.container_id;
+        let page_id = id.page_id.unwrap();
+        let slot_id = id.slot_id.unwrap();
+
+        let page = self.get_page(container_id, page_id, tid, perm, false).unwrap();
+        if let Some(values) = page.get_value(slot_id) {
+            return Ok(values);
+        } else {
+            Err(CrustyError::CrustyError(
+                "Could not find value in page".to_string()
+            ))
+        }
     }
 
     fn get_storage_path(&self) -> &Path {
@@ -219,7 +359,11 @@ impl StorageTrait for StorageManager {
     fn reset(&self) -> Result<(), CrustyError> {
         fs::remove_dir_all(self.storage_dir.clone())?;
         fs::create_dir_all(self.storage_dir.clone()).unwrap();
-        panic!("TODO milestone hs");
+        
+        let mut files = self.file_path.write().unwrap();
+        files.clear();
+
+        Ok(())
     }
 
     /// If there is a buffer pool or cache it should be cleared/reset.
@@ -234,7 +378,23 @@ impl StorageTrait for StorageManager {
     /// that can be used to create a HeapFile object pointing to the same data. You don't need to
     /// worry about recreating read_count or write_count.
     fn shutdown(&self) {
-        panic!("TODO milestone hs");
+        let mut path_name = self.storage_dir.clone();
+        path_name.push("_map.ser");
+
+        let f = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path_name)
+        {
+            Ok(f) => f,
+            Err(error) => {
+                panic!("Couldn't open serialized SM {:?}", path_name)
+            }
+        };
+
+        let files = self.file_path.read().unwrap();
+        serde_cbor::to_writer(f, &*files).unwrap();
     }
 }
 
@@ -271,6 +431,7 @@ mod test {
         let tid = TransactionId::new();
 
         let val1 = sm.insert_value(cid, bytes.clone(), tid);
+        println!("{:?}", sm.get_num_pages(cid));
         assert_eq!(1, sm.get_num_pages(cid));
         assert_eq!(0, val1.page_id.unwrap());
         assert_eq!(0, val1.slot_id.unwrap());
@@ -292,6 +453,7 @@ mod test {
 
     #[test]
     fn hs_sm_b_iter_small() {
+        println!("aa");
         init();
         let sm = StorageManager::new_test_sm();
         let cid = 1;
@@ -325,10 +487,13 @@ mod test {
         }
         byte_vec.append(&mut byte_vec2);
 
+        println!("before iter");
         let iter = sm.get_iterator(cid, tid, Permissions::ReadOnly);
+        println!("after iter");
         for (i, x) in iter.enumerate() {
             assert_eq!(byte_vec[i], x.0);
         }
+        println!("after loop");
 
         // Should be on 3 pages
         let mut byte_vec2: Vec<Vec<u8>> = vec![

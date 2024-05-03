@@ -2,6 +2,7 @@ use crate::heap_page::HeapPage;
 use crate::page::Page;
 use common::prelude::*;
 use common::PAGE_SIZE;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ use std::io::{Seek, SeekFrom};
 pub(crate) struct HeapFile {
     // TODO milestone hs
     // Add any fields you need to maintain state for a HeapFile
-
+    pub locked_file: Arc<RwLock<File>>,
     // Track this HeapFile's container Id
     pub container_id: ContainerId,
     // The following are for profiling/ correctness checks
@@ -54,12 +55,13 @@ impl HeapFile {
             }
         };
 
-        // TODO milestone hs
-        // Initialize the HeapFile
+        // Create RwLock for file
+        let locked_file = Arc::new(RwLock::new(file));
 
         Ok(HeapFile {
             //TODO milestone hs
             // Add your fields here
+            locked_file,
             container_id,
             read_count: AtomicU16::new(0),
             write_count: AtomicU16::new(0),
@@ -70,7 +72,10 @@ impl HeapFile {
     /// Return type is PageId (alias for another type) as we cannot have more
     /// pages than PageId can hold.
     pub fn num_pages(&self) -> PageId {
-        panic!("TODO milestone hs");
+        // Get total number of bytes
+        let metadata = self.locked_file.read().unwrap().metadata().unwrap();
+        let file_size = metadata.len();
+        return (file_size / PAGE_SIZE as u64) as PageId;
     }
 
     /// Read the page from the file.
@@ -82,7 +87,25 @@ impl HeapFile {
         {
             self.read_count.fetch_add(1, Ordering::Relaxed);
         }
-        panic!("TODO milestone hs");
+
+        // Page Ids start at zero, so if the page is in the file
+        // it must be less than the number of pages  
+        if self.num_pages() > pid {
+            // Read file starting at the correct index
+            let index = (pid as usize) * PAGE_SIZE;
+            let mut file = self.locked_file.write().unwrap(); // Acquire read lock
+            file.seek(SeekFrom::Start(index as u64))?;
+
+            let mut buffer = [0; PAGE_SIZE];
+            file.read_exact(&mut buffer)?;
+
+            return Ok(Page { data: buffer });
+        } else {
+            return Err(CrustyError::CrustyError(format!(
+                "PageId {} not found in the heap file",
+                pid
+            )));
+        }
     }
 
     /// Take a page and write it to the underlying file.
@@ -98,7 +121,22 @@ impl HeapFile {
         {
             self.write_count.fetch_add(1, Ordering::Relaxed);
         }
-        panic!("TODO milestone hs");
+        let pid = page.get_page_id();
+        let data = page.data;
+
+        if self.num_pages() > pid {
+            // if the page is in the file, we will read starting from the index
+            let index = (pid as usize) * PAGE_SIZE;
+            let mut file = self.locked_file.write().unwrap(); // Acquire read lock
+            file.seek(SeekFrom::Start(index as u64))?;
+            file.write_all(&data)?;
+            return Ok(());
+        } else {
+            let mut file = self.locked_file.write().unwrap();
+            file.seek(SeekFrom::End(0))?;
+            file.write_all(&data)?;
+            return Ok(());
+        }
     }
 }
 

@@ -236,7 +236,7 @@ impl HeapPage for Page {
 pub struct HeapPageIntoIter {
     page: Page,
     // todo!("Add any fields you need here")
-    slot_ids: Vec<u16>,
+    pub slot_ids: Vec<u16>
 }
 
 /// The implementation of the (consuming) page iterator.
