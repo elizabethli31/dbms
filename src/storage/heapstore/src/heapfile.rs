@@ -43,6 +43,7 @@ impl HeapFile {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&file_path)
         {
             Ok(f) => f,
@@ -75,7 +76,7 @@ impl HeapFile {
         // Get total number of bytes
         let metadata = self.locked_file.read().unwrap().metadata().unwrap();
         let file_size = metadata.len();
-        return (file_size / PAGE_SIZE as u64) as PageId;
+        (file_size / PAGE_SIZE as u64) as PageId
     }
 
     /// Read the page from the file.
@@ -89,7 +90,7 @@ impl HeapFile {
         }
 
         // Page Ids start at zero, so if the page is in the file
-        // it must be less than the number of pages  
+        // it must be less than the number of pages
         if self.num_pages() > pid {
             // Read file starting at the correct index
             let index = (pid as usize) * PAGE_SIZE;
@@ -99,12 +100,12 @@ impl HeapFile {
             let mut buffer = [0; PAGE_SIZE];
             file.read_exact(&mut buffer)?;
 
-            return Ok(Page { data: buffer });
+            Ok(Page { data: buffer })
         } else {
-            return Err(CrustyError::CrustyError(format!(
+            Err(CrustyError::CrustyError(format!(
                 "PageId {} not found in the heap file",
                 pid
-            )));
+            )))
         }
     }
 
@@ -130,12 +131,12 @@ impl HeapFile {
             let mut file = self.locked_file.write().unwrap(); // Acquire read lock
             file.seek(SeekFrom::Start(index as u64))?;
             file.write_all(&data)?;
-            return Ok(());
+            Ok(())
         } else {
             let mut file = self.locked_file.write().unwrap();
             file.seek(SeekFrom::End(0))?;
             file.write_all(&data)?;
-            return Ok(());
+            Ok(())
         }
     }
 }

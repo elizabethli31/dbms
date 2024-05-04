@@ -73,6 +73,8 @@ fn sm_test_shutdown() {
 
     let sm2 = StorageManager::new(&path.clone());
     let check_vals: Vec<Vec<u8>> = sm2.get_iterator(cid, t, RO).map(|(a, _)| a).collect();
+    // println!("bytes ugh {:?}", vals1);
+    // println!("bytes post {:?}", check_vals);
     assert!(compare_unordered_byte_vecs(&vals1, check_vals));
     sm2.reset().unwrap();
     fs::remove_dir_all(path).unwrap();

@@ -21,7 +21,7 @@ pub struct HeapFileIterator {
     hf: Arc<HeapFile>,
     iter: Option<HeapPageIntoIter>,
     slot_start: Option<u16>,
-    container_id: ContainerId
+    container_id: ContainerId,
 }
 
 /// Required HeapFileIterator functions
@@ -29,14 +29,14 @@ impl HeapFileIterator {
     /// Create a new HeapFileIterator that stores the tid, and heapFile pointer.
     /// This should initialize the state required to iterate through the heap file.
     pub(crate) fn new(tid: TransactionId, hf: Arc<HeapFile>) -> Self {
-        let container_id = hf.container_id.clone();
+        let container_id = hf.container_id;
         HeapFileIterator {
             page_start: 0,
             tid,
             hf,
             iter: None,
             slot_start: None,
-            container_id
+            container_id,
         }
     }
 
@@ -47,7 +47,7 @@ impl HeapFileIterator {
         };
 
         let slot_start = value_id.slot_id;
-        let container_id = hf.container_id.clone();
+        let container_id = hf.container_id;
 
         HeapFileIterator {
             page_start,
@@ -55,7 +55,7 @@ impl HeapFileIterator {
             hf,
             iter: None,
             slot_start,
-            container_id
+            container_id,
         }
     }
 }
@@ -68,35 +68,44 @@ impl Iterator for HeapFileIterator {
         let page_id = self.page_start;
         let container_id = self.container_id;
 
+        // No more pages left
         if self.page_start >= self.hf.num_pages() {
             return None;
         }
 
+        // If page iterator exists
         if let Some(page_iter) = self.iter.as_mut() {
+            // If we have more byte to iterate
             if let Some((bytes, slot)) = page_iter.next() {
                 let val_id = ValueId {
                     container_id,
                     segment_id: None,
                     page_id: Some(page_id),
-                    slot_id: Some(slot)
+                    slot_id: Some(slot),
                 };
-                return Some((bytes, val_id));
+                Some((bytes, val_id))
             } else {
+                // End of page, set up for next page
                 self.page_start += 1;
                 self.iter = None;
-                return self.next();
+                self.next()
             }
         } else {
+            // No page iterator so create one
             let p = self.hf.read_page_from_file(self.page_start).unwrap();
             let mut page_iter = p.into_iter();
 
+            // For iterator that starts with a certain ValueId
             if let Some(slot) = self.slot_start {
                 let idx = page_iter.slot_ids.iter().position(|&x| x == slot).unwrap();
+                // Delete all values in slot_ids before the start slow
                 page_iter.slot_ids.drain(..idx);
+
+                // The slot field is only populated for the first page
                 self.slot_start = None;
             }
             self.iter = Some(page_iter);
-            return self.next();
+            self.next()
         }
     }
 }

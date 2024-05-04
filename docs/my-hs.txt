@@ -1,0 +1,16 @@
+1. For my heap file, I decided to include a lock for the file because the heapfile was an immutable field. Similarly, I did this in the 
+storage manager as well. For the SM, I created two hashmaps: one for mapping between container_ids and their paths, and the other for
+mapping between container_ids and their associated heap files. Upon shutdown, the first hashmap was serialized, and when a new SM was
+created, the second hashmap would be built based off the path hashmap if the serialization exists. At first, I was creating a new heapfile
+each time I needed to read/write from a container. Thus, adding the hashmap between container_ids and heapfiles helped with less I/O
+operations. The heapfile included in the SM was locked. In my iterator, I added page_id, page_iterator, and slot_id fields. Since the
+pages are ordered in the container, I was able to simply increment the iterator's stored page_id each time a page was read entirely.
+The page_iterator made it so that I did not need to create a new one for each next() operation. The slot_id field was optional, so that 
+only for the first page id if it was indicated to start from a certain slot would this field hold a value. 
+
+2. Getting the accuracy for the storage manager was relatively quick. However, I was not passing any of the benchmark tests which means
+I had to go back and change the logic for my heap page implementation. This took the longest time for me. The benchmark tests were a bit
+vague, and I wish it was more clear in exactly what was being tested.
+
+3. I believe my SM 1k benchmark is still not passing. I have some thoughts on how to better serialize my SM that I think would help with
+passing this test.

@@ -8,12 +8,12 @@ use common::testutil::gen_random_test_sm_dir;
 use common::PAGE_SIZE;
 // use core::panicking::panic;
 use std::collections::HashMap;
+use std::fs::{read_to_string, File, OpenOptions};
 use std::hash::Hash;
 use std::path::{self, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::{fs, num};
-use std::fs::{File, OpenOptions};
 
 pub const STORAGE_DIR: &str = "heapstore";
 
@@ -26,7 +26,7 @@ pub struct StorageManager {
     is_temp: bool,
     file_paths: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>>,
     #[serde(skip)]
-    files: Arc<RwLock<HashMap<ContainerId, Arc<HeapFile>>>>
+    files: Arc<RwLock<HashMap<ContainerId, Arc<HeapFile>>>>,
 }
 
 /// The required functions in HeapStore's StorageManager that are specific for HeapFiles
@@ -41,11 +41,14 @@ impl StorageManager {
         _pin: bool,
     ) -> Option<Page> {
         let files = self.files.read().unwrap();
+        // Get file by container id
         if let Some(hf) = files.get(&container_id) {
+            // Read page from container
             match hf.read_page_from_file(page_id) {
                 Ok(page) => Some(page),
-                Err(r) => None
+                Err(r) => None,
             }
+        // If file does not exist
         } else {
             None
         }
@@ -60,12 +63,12 @@ impl StorageManager {
     ) -> Result<(), CrustyError> {
         let files = self.files.read().unwrap();
         if let Some(hf) = files.get(&container_id) {
-            return hf.write_page_to_file(page);
+            hf.write_page_to_file(page)
         } else {
-            return Err(CrustyError::CrustyError(format!(
+            Err(CrustyError::CrustyError(format!(
                 "ContainerId {} not found in the SM",
                 container_id
-            )));
+            )))
         }
     }
 
@@ -88,6 +91,7 @@ impl StorageManager {
             drop(files);
             (read, write)
         } else {
+            // If no heap file found, return 0,0
             (0, 0)
         }
     }
@@ -120,26 +124,39 @@ impl StorageTrait for StorageManager {
     fn new(storage_dir: &Path) -> Self {
         let mut map_path = storage_dir.to_path_buf();
         map_path.push("map.ser");
-
         let exists = map_path.try_exists().unwrap();
 
         let files: Arc<RwLock<HashMap<ContainerId, Arc<HeapFile>>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
+        // If HashMap for paths were serialized
         if exists {
             let f = File::open(map_path).expect("could not map file");
-            let file_paths: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>> = serde_cbor::from_reader(f).unwrap();
+            let file_paths: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>> =
+                serde_cbor::from_reader(f).unwrap();
             let mut lock = files.write().unwrap();
+            // For each item in the hashmap, create a heapfile and populate SM
             for (container_id, path) in &*file_paths.read().unwrap() {
                 let hf = HeapFile::new(path.to_path_buf(), *container_id).unwrap();
                 lock.insert(*container_id, Arc::new(hf));
             }
             drop(lock);
-            StorageManager { storage_dir: storage_dir.to_path_buf(), is_temp: false, file_paths, files}
+            StorageManager {
+                storage_dir: storage_dir.to_path_buf(),
+                is_temp: false,
+                file_paths,
+                files,
+            }
         } else {
+            // No serialized SM, create new
             let file_paths: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-            StorageManager { storage_dir: storage_dir.to_path_buf(), is_temp: false, file_paths, files}
+                Arc::new(RwLock::new(HashMap::new()));
+            StorageManager {
+                storage_dir: storage_dir.to_path_buf(),
+                is_temp: false,
+                file_paths,
+                files,
+            }
         }
     }
 
@@ -152,7 +169,12 @@ impl StorageTrait for StorageManager {
             Arc::new(RwLock::new(HashMap::new()));
         let file_paths: Arc<RwLock<HashMap<ContainerId, Arc<PathBuf>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        StorageManager { storage_dir, is_temp: true, file_paths, files}
+        StorageManager {
+            storage_dir,
+            is_temp: true,
+            file_paths,
+            files,
+        }
     }
 
     /// Insert some bytes into a container for a particular value (e.g. record).
@@ -177,31 +199,35 @@ impl StorageTrait for StorageManager {
         let mut page_id = 0 as PageId;
 
         if num_pages > 0 {
+            // Insert into the first page with free space
             for pid in 0..num_pages {
-                let mut page = self.get_page(container_id, pid, tid, Permissions::ReadWrite, false).unwrap();
+                let mut page = self
+                    .get_page(container_id, pid, tid, Permissions::ReadWrite, false)
+                    .unwrap();
 
                 if let Some(slot) = page.add_value(&value) {
                     page_id = pid;
                     slot_id = slot;
                     completed = true;
-                    self.write_page(container_id, &page, tid);
+                    self.write_page(container_id, &page, tid).unwrap();
                     break;
                 }
             }
         }
 
+        // No pages with free space, create new page
         if !completed {
             page_id = num_pages;
             let mut page = Page::new(page_id);
             slot_id = page.add_value(&value).expect("Couldn't create page");
-            self.write_page(container_id, &page, tid);
+            self.write_page(container_id, &page, tid).unwrap();
         }
-        return ValueId { 
+        ValueId {
             container_id,
             segment_id: None,
             page_id: Some(page_id),
-            slot_id: Some(slot_id)
-        };
+            slot_id: Some(slot_id),
+        }
     }
 
     /// Insert some bytes into a container for vector of values (e.g. record).
@@ -224,9 +250,12 @@ impl StorageTrait for StorageManager {
     fn delete_value(&self, id: ValueId, tid: TransactionId) -> Result<(), CrustyError> {
         let container_id = id.container_id;
         if let (Some(pid), Some(slot)) = (id.page_id, id.slot_id) {
-            let mut page = self.get_page(container_id, pid, tid, Permissions::ReadWrite, false).unwrap();
+            // Get page, delete, write
+            let mut page = self
+                .get_page(container_id, pid, tid, Permissions::ReadWrite, false)
+                .unwrap();
             page.delete_value(slot);
-            self.write_page(container_id, &page, tid);
+            self.write_page(container_id, &page, tid).unwrap();
             Ok(())
         } else {
             Ok(())
@@ -242,6 +271,8 @@ impl StorageTrait for StorageManager {
         id: ValueId,
         _tid: TransactionId,
     ) -> Result<ValueId, CrustyError> {
+        // Delete value, then insert new
+        // Errors handled by delete and insert
         let _ = self.delete_value(id, _tid);
         Ok(self.insert_value(id.container_id, value, _tid))
     }
@@ -263,31 +294,36 @@ impl StorageTrait for StorageManager {
         _container_type: common::ids::StateType,
         _dependencies: Option<Vec<ContainerId>>,
     ) -> Result<(), CrustyError> {
+        // Create directory if there is not one
         match fs::create_dir_all(self.get_storage_path()) {
             Ok(dir) => {}
             Err(e) => {
                 return Err(CrustyError::CrustyError(
-                    "Error creating directory or already exists".to_string()
+                    "Error creating directory or already exists".to_string(),
                 ));
             }
         }
+        // Create empty files and file_paths
+        // These should correspond (i.e. same containers in both)
         let mut files = self.files.write().unwrap();
         let mut file_paths = self.file_paths.write().unwrap();
-        if files.contains_key(&container_id) {
-            return Err(CrustyError::CrustyError(
-                "Container already exists".to_string()
-            ));
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(e) = files.entry(container_id) {
             let mut path = self.get_storage_path().to_path_buf();
+            // Heapfile of the form "container_id.hf"
             path.push(container_id.to_string());
             path.set_extension("hf");
             let hf = HeapFile::new(path.clone(), container_id).unwrap();
-            files.insert(container_id, Arc::new(hf));
+            // Insert into both HashMaps
+            e.insert(Arc::new(hf));
             file_paths.insert(container_id, Arc::new(path.clone()));
             drop(files);
             drop(file_paths);
             Ok(())
-        }   
+        } else {
+            Err(CrustyError::CrustyError(
+                "Container already exists".to_string(),
+            ))
+        }
     }
 
     /// A wrapper function to call create container
@@ -300,6 +336,7 @@ impl StorageTrait for StorageManager {
     fn remove_container(&self, container_id: ContainerId) -> Result<(), CrustyError> {
         let mut files = self.files.write().unwrap();
         let mut file_paths = self.file_paths.write().unwrap();
+        // If container is in files HashMap
         if let Some(hf) = files.get(&container_id) {
             files.remove(&container_id);
             let path_buf = file_paths.get(&container_id).unwrap().clone();
@@ -311,7 +348,7 @@ impl StorageTrait for StorageManager {
             Ok(())
         } else {
             Err(CrustyError::CrustyError(
-                "Container does not exist".to_string()
+                "Container does not exist".to_string(),
             ))
         }
     }
@@ -326,7 +363,7 @@ impl StorageTrait for StorageManager {
         let files = self.files.read().unwrap();
         let hf = files.get(&container_id).unwrap().clone();
         drop(files);
-        return HeapFileIterator::new(tid, hf);
+        HeapFileIterator::new(tid, hf)
     }
 
     fn get_iterator_from(
@@ -339,7 +376,7 @@ impl StorageTrait for StorageManager {
         let files = self.files.read().unwrap();
         let hf = files.get(&container_id).unwrap().clone();
         drop(files);
-        return HeapFileIterator::new_from(tid, hf, start);
+        HeapFileIterator::new_from(tid, hf, start)
     }
 
     /// Get the data for a particular ValueId. Error if does not exists
@@ -353,12 +390,15 @@ impl StorageTrait for StorageManager {
         let page_id = id.page_id.unwrap();
         let slot_id = id.slot_id.unwrap();
 
-        let page = self.get_page(container_id, page_id, tid, perm, false).unwrap();
+        // With given page_id, get the value
+        let page = self
+            .get_page(container_id, page_id, tid, perm, false)
+            .unwrap();
         if let Some(values) = page.get_value(slot_id) {
-            return Ok(values);
+            Ok(values)
         } else {
             Err(CrustyError::CrustyError(
-                "Could not find value in page".to_string()
+                "Could not find value in page".to_string(),
             ))
         }
     }
@@ -375,7 +415,7 @@ impl StorageTrait for StorageManager {
     fn reset(&self) -> Result<(), CrustyError> {
         fs::remove_dir_all(self.storage_dir.clone())?;
         fs::create_dir_all(self.storage_dir.clone()).unwrap();
-        
+
         let mut files = self.files.write().unwrap();
         files.clear();
         drop(files);
@@ -402,6 +442,7 @@ impl StorageTrait for StorageManager {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path_name)
         {
             Ok(f) => f,
@@ -410,6 +451,7 @@ impl StorageTrait for StorageManager {
             }
         };
 
+        // Serializing HashMap with containers and paths
         let file_paths = self.file_paths.read().unwrap();
         serde_cbor::to_writer(f, &*file_paths).unwrap();
     }
