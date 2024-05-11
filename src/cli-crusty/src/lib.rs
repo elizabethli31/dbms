@@ -1,6 +1,7 @@
 extern crate rustyline;
 use common::error::c_err;
 use common::{CrustyError, QueryResult};
+use env_logger::Env;
 use log::{debug, error, info};
 use rustyline::history::FileHistory;
 use serde::Deserialize;
@@ -19,7 +20,7 @@ pub use common::commands::Response;
 #[derive(Parser, Deserialize, Debug)]
 pub struct ClientConfig {
     /// Server IP address
-    #[clap(short = 'h', long = "host", default_value = "0.0.0.0")]
+    #[clap(short = 's', long = "server", default_value = "0.0.0.0")]
     host: String,
     /// Server port number
     #[clap(short = 'p', long = "port", default_value = "3333")]
@@ -59,6 +60,8 @@ impl Client {
     }
 
     pub fn run_cli(&mut self) {
+        env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
         let mut rl = DefaultEditor::new().unwrap();
         if rl.load_history("history.txt").is_err() {
             info!("No previous history.");
