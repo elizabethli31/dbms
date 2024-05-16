@@ -298,6 +298,7 @@ pub fn send_response(
     Ok(())
 }
 
+#[allow(clippy::unused_io_amount)]
 pub fn read_command(stream: &mut TcpStream) -> Option<Command> {
     let mut buffer = [0; 1024];
     match stream.read(&mut buffer) {

@@ -1,14 +1,16 @@
 use super::OpIterator;
 use crate::Managers;
 use common::bytecode_expr::ByteCodeExpr;
-use common::datatypes::f_decimal;
+use common::datatypes::{f_decimal, f_int};
 use common::{AggOp, CrustyError, Field, TableSchema, Tuple};
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::ops::{Add, Div};
 
 /// Aggregate operator. (You can add any other fields that you think are neccessary)
 pub struct Aggregate {
     // Static objects (No need to reset on close)
+    #[allow(dead_code)]
     managers: &'static Managers,
 
     // Parameters (No need to reset on close)
@@ -26,6 +28,10 @@ pub struct Aggregate {
     will_rewind: bool,
     // States (Need to reset on close)
     // todo!("Your code here")
+    open: bool,
+    groups: HashMap<Vec<Field>, Vec<(Field, Field)>>,
+    current_group: usize,
+    group_keys: Vec<Vec<Field>>,
 }
 
 impl Aggregate {
@@ -39,11 +45,83 @@ impl Aggregate {
     ) -> Self {
         assert!(ops.len() == agg_expr.len());
 
-        todo!("Your code here")
+        Self {
+            managers,
+            schema,
+            groupby_expr,
+            agg_expr,
+            ops,
+            child,
+            will_rewind: true,
+            open: false,
+            groups: HashMap::new(),
+            current_group: 0,
+            group_keys: Vec::new(),
+        }
     }
 
     pub fn merge_tuple_into_group(&mut self, tuple: &Tuple) {
-        todo!("Your code here")
+        // Get the group for each tuple
+        let mut group = Vec::new();
+        for group_agg in &self.groupby_expr {
+            group.push(group_agg.eval(tuple));
+        }
+        // Set up accumulators for aggregation (value in hashmap)
+        let mut accs = Vec::new();
+        for op in self.ops.iter() {
+            if AggOp::Avg == *op {
+                accs.push((f_decimal(0.0), f_decimal(0.0)));
+            } else {
+                accs.push((f_int(0), f_int(0)));
+            }
+        }
+        let mut new: bool = false;
+        // If the group already exists in the hashmap, get the current aggregated values
+        if let Some(current_accs) = self.groups.get(&group) {
+            accs = current_accs.clone();
+        } else {
+            new = true;
+        }
+
+        // Iterate through the operators
+        // Evaluate operations and add to accumulated values for each group
+        for (idx, op) in self.ops.iter().enumerate() {
+            let val = self.agg_expr[idx].eval(tuple);
+            match op {
+                AggOp::Count => {
+                    let (count, _) = accs[idx].clone();
+                    let new_count = count.add(f_int(1)).unwrap();
+                    accs[idx] = (new_count, f_int(0));
+                }
+                AggOp::Avg => {
+                    let (count, sum) = accs[idx].clone();
+                    let new_count = count.add(f_int(1)).unwrap();
+                    let new_sum = sum.add(val).unwrap();
+
+                    // Accumulate count and sum for Avg operator
+                    accs[idx] = (new_count, new_sum);
+                }
+                AggOp::Max => {
+                    let (cur_max, _) = accs[idx].clone();
+                    accs[idx] = (max(cur_max, val), f_int(0));
+                }
+                AggOp::Min => {
+                    let (cur_min, _) = accs[idx].clone();
+                    if new {
+                        accs[idx] = (val, f_int(0))
+                    } else {
+                        accs[idx] = (min(cur_min, val), f_int(0));
+                    }
+                }
+                AggOp::Sum => {
+                    let (sum, _) = accs[idx].clone();
+                    let new_sum = sum.add(val).unwrap();
+                    accs[idx] = (new_sum, f_int(0));
+                }
+            }
+        }
+        // Insert key and new accumulated value to hashmap
+        self.groups.insert(group, accs);
     }
 }
 
@@ -55,19 +133,76 @@ impl OpIterator for Aggregate {
     }
 
     fn open(&mut self) -> Result<(), CrustyError> {
-        todo!("Your code here")
+        if !self.open {
+            self.open = true;
+            self.child.open()?;
+            // Merge all tuples in child to group
+            while let Some(cur_tuple) = self.child.next()? {
+                self.merge_tuple_into_group(&cur_tuple);
+            }
+            if self.ops.contains(&AggOp::Avg) {
+                for (group, aggs) in self.groups.clone() {
+                    let mut new_aggs = aggs.clone();
+                    let g = group.clone();
+                    for (idx, op) in self.ops.iter().enumerate() {
+                        // If the operator is Avg, we want to calculate the avg
+                        // from accumulated count and sum
+                        if AggOp::Avg == *op {
+                            let (count, sum) = &new_aggs[idx];
+                            let s = sum.clone();
+                            let avg = s.div(count.clone())?;
+                            new_aggs[idx] = (avg, f_decimal(0.0));
+                        }
+                    }
+                    // Updates made only if one of the operators is Avg
+                    self.groups.insert(g, new_aggs);
+                }
+            }
+            // Store groups as keys (used for next)
+            let keys: Vec<_> = self.groups.keys().cloned().collect();
+            self.group_keys = keys;
+        }
+        Ok(())
     }
 
     fn next(&mut self) -> Result<Option<Tuple>, CrustyError> {
-        todo!("Your code here")
+        if !self.open {
+            panic!("Iterator is not open");
+        }
+        // Iterate through all keys (groups)
+        if self.current_group < self.group_keys.len() {
+            let group = &self.group_keys[self.current_group];
+            let mut fields = group.clone();
+            let aggs = self
+                .groups
+                .get(group)
+                .expect("should have matching group")
+                .clone();
+            // Only need first value from pair item for each aggregated value
+            let mut first_aggs = aggs.into_iter().map(|(first, _)| first).collect();
+            fields.append(&mut first_aggs);
+            let tuple = Tuple::new(fields.to_vec());
+            // Move to next group
+            self.current_group += 1;
+            return Ok(Some(tuple));
+        }
+        Ok(None)
     }
 
     fn close(&mut self) -> Result<(), CrustyError> {
-        todo!("Your code here")
+        self.child.close()?;
+        self.open = false;
+        Ok(())
     }
 
     fn rewind(&mut self) -> Result<(), CrustyError> {
-        todo!("Your code here")
+        if !self.open {
+            panic!("Iterator is not open");
+        }
+        self.open = false;
+        // Reset group iterator
+        self.current_group = 0;
+        Ok(())
     }
 
     fn get_schema(&self) -> &TableSchema {
