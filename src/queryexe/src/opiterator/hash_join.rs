@@ -1,10 +1,8 @@
 use super::OpIterator;
 use crate::Managers;
-
 use common::bytecode_expr::ByteCodeExpr;
 use common::{CrustyError, Field, TableSchema, Tuple};
 use std::collections::HashMap;
-use std::string::ToString;
 
 /// Hash equi-join implementation. (You can add any other fields that you think are neccessary)
 pub struct HashEqJoin {
@@ -22,7 +20,7 @@ pub struct HashEqJoin {
     // todo!("Your code here")
     open: bool,
     current_tuple: Option<Tuple>,
-    outer_hash: Option<HashMap<Field, Tuple>>,
+    outer_hash: HashMap<Field, (usize, Vec<Tuple>)>,
 }
 
 impl HashEqJoin {
@@ -51,7 +49,8 @@ impl HashEqJoin {
             right_child,
             open: false,
             current_tuple: None,
-            outer_hash: None,
+            // outer_hash: None,
+            outer_hash: HashMap::new(),
         }
     }
 }
@@ -68,16 +67,15 @@ impl OpIterator for HashEqJoin {
             self.right_child.open()?;
             self.current_tuple = self.right_child.next()?;
             self.open = true;
-
-            if self.outer_hash.is_none() {
-                // Set up hash
-                // Hash all left tuples with key on the evaluated value
-                let mut outer = HashMap::new();
-                while let Some(left_tuple) = self.left_child.next()? {
-                    let left = self.left_expr.eval(&left_tuple);
-                    outer.insert(left, left_tuple.clone());
+            while let Some(left_tuple) = self.left_child.next()? {
+                let left = self.left_expr.eval(&left_tuple);
+                if let Some((count, cur_tuples)) = self.outer_hash.get(&left) {
+                    let mut new_tuples = cur_tuples.clone();
+                    new_tuples.push(left_tuple);
+                    self.outer_hash.insert(left, (*count, new_tuples));
+                } else {
+                    self.outer_hash.insert(left, (0, vec![left_tuple.clone()]));
                 }
-                self.outer_hash = Some(outer);
             }
         }
         Ok(())
@@ -89,22 +87,20 @@ impl OpIterator for HashEqJoin {
         }
         // Iterate through all right tuples (inner table)
         while let Some(right_tuple) = &self.current_tuple {
-            match &self.outer_hash {
-                Some(outer) => {
-                    let right = self.right_expr.eval(right_tuple);
-                    // If the left key exists using the right value,
-                    // merge the tuples together
-                    if let Some(left_val) = outer.get(&right) {
-                        let t = left_val.merge(right_tuple);
-                        self.current_tuple = self.right_child.next()?;
-                        return Ok(Some(t));
-                    }
+            let right = self.right_expr.eval(right_tuple);
+            // If the left key exists using the right value,
+            // merge the tuples together
+            if let Some((idx, left_val)) = self.outer_hash.get(&right) {
+                let mut i = *idx;
+                let left_tuples = left_val.clone();
+                let left_tuple = &left_tuples[i];
+                let t = left_tuple.merge(right_tuple);
+                self.current_tuple = self.right_child.next()?;
+                if left_tuples.len() > (i + 1) {
+                    i += 1;
                 }
-                _ => {
-                    return Err(CrustyError::CrustyError(
-                        "No hash table even though open".to_string()
-                    ));
-                }
+                self.outer_hash.insert(right, (i, left_tuples));
+                return Ok(Some(t));
             }
             self.current_tuple = self.right_child.next()?;
         }
@@ -115,7 +111,7 @@ impl OpIterator for HashEqJoin {
         self.left_child.close()?;
         self.right_child.close()?;
         self.open = false;
-        self.outer_hash = None;
+        // self.outer_hash = None;
         Ok(())
     }
 

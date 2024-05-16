@@ -72,7 +72,7 @@ impl OpIterator for NestedLoopJoin {
         if !self.open {
             panic!("Iterator is not open");
         }
-        // Iterate through every single right tuple (inner table) for each 
+        // Iterate through every single right tuple (inner table) for each
         // left tuple (outer table)
         while let Some(left_tuple) = &self.current_tuple {
             while let Some(right_tuple) = self.right_child.next()? {
