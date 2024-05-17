@@ -81,6 +81,7 @@ impl OpIterator for HashEqJoin {
         Ok(())
     }
 
+    #[allow(clippy::never_loop)]
     fn next(&mut self) -> Result<Option<Tuple>, CrustyError> {
         if !self.open {
             panic!("Iterator is not open");
@@ -91,7 +92,7 @@ impl OpIterator for HashEqJoin {
             // If the left key exists using the right value,
             // merge the tuples together
             if let Some(left_val) = self.outer_hash.get(&right) {
-                if let Some((idx, left_tuple)) = left_val.iter().enumerate().next() {
+                for (idx, left_tuple) in left_val.iter().enumerate() {
                     let t = left_tuple.merge(right_tuple);
                     if idx == (left_val.len() - 1) {
                         self.current_tuple = self.right_child.next()?;
