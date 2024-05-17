@@ -20,7 +20,7 @@ pub struct HashEqJoin {
     // todo!("Your code here")
     open: bool,
     current_tuple: Option<Tuple>,
-    outer_hash: HashMap<Field, Vec<Tuple>>,
+    outer_hash: HashMap<Field, (usize, Vec<Tuple>)>,
 }
 
 impl HashEqJoin {
@@ -68,13 +68,12 @@ impl OpIterator for HashEqJoin {
             self.open = true;
             while let Some(left_tuple) = self.left_child.next()? {
                 let left = self.left_expr.eval(&left_tuple);
-                if let Some(cur_tuples) = self.outer_hash.get(&left) {
-                    // If more than one tuple matches to the same expression
+                if let Some((_, cur_tuples)) = self.outer_hash.get(&left) {
                     let mut new_tuples = cur_tuples.clone();
                     new_tuples.push(left_tuple);
-                    self.outer_hash.insert(left, new_tuples);
+                    self.outer_hash.insert(left, (0, new_tuples));
                 } else {
-                    self.outer_hash.insert(left, vec![left_tuple.clone()]);
+                    self.outer_hash.insert(left, (0, vec![left_tuple.clone()]));
                 }
             }
         }
@@ -91,14 +90,19 @@ impl OpIterator for HashEqJoin {
             let right = self.right_expr.eval(right_tuple);
             // If the left key exists using the right value,
             // merge the tuples together
-            if let Some(left_val) = self.outer_hash.get(&right) {
-                for (idx, left_tuple) in left_val.iter().enumerate() {
-                    let t = left_tuple.merge(right_tuple);
-                    if idx == (left_val.len() - 1) {
-                        self.current_tuple = self.right_child.next()?;
-                    }
-                    return Ok(Some(t));
+            if let Some((count, left_val)) = self.outer_hash.get(&right) {
+                let mut i = *count;
+                let left_tuples = left_val.clone();
+                let left_tuple = &left_tuples[i];
+                let t = left_tuple.merge(right_tuple);
+                if left_tuples.len() > (i + 1) {
+                    i += 1;
+                    self.outer_hash.insert(right, (i, left_tuples));
+                } else {
+                    self.current_tuple = self.right_child.next()?;
+                    self.outer_hash.insert(right, (0, left_tuples));
                 }
+                return Ok(Some(t));
             }
             self.current_tuple = self.right_child.next()?;
         }
