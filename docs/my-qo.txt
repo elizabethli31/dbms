@@ -25,11 +25,13 @@ I move onto the next tuple in the outer relation and repeat the process until
 all tuples from the outer table have been passed through.
 For the hash_join, I kept track of open and current_tuple along with a hash
 of all the outer table tuples. When I opened the iterator, I created a hashing
-between each tuple from the outer table and its evaluated value. This time,
+between each tuple from the outer table and its evaluated value. If multiple tuples
+hashed to the same value, I added it to a vector. This time,
 the current_tuple is from the inner table. Then, in next(), I iterate through
 all the inner table tuples by using the evaluated expression as a hash function
 for the key of the hashmap of the outer table. If there was a value found,
-I merged the two tuples.
+I merged the two tuples. For values that matched multiple tuples, I merged
+all the left child tuples with the current right child tuple
 For aggregate, I kept track of open, a hashmap of the accumulated values, the current
 group being iterated on, and the keys of the hashmap. The hashmap had the groups as keys 
 and the values were an accumulation of each aggregate operator for tuples added to
@@ -37,8 +39,9 @@ the group. I implemented the accumulation as a Vec<(Field, Field)> to account fo
 operator. I chose to keep track of the keys so I could iterate through the hashmap with an 
 index and allow for rewinding.
 
-- This milestone took me around 8 hours. Understanding how the open and next functions operated
+- This milestone took me around 10 hours. Understanding how the open and next functions operated
 took me the longest. Once I understood how tuples were being iterated through, the logic for
 implementing the query operators was more straightforward. Aggregate took me the longest 
-and much of it was to account for Avg. I enjoyed this project, especially thinking through
+and much of it was to account for Avg. Additionally, figuring out the hidden hash join test 
+took a significant amount of time. I enjoyed this project, especially thinking through
 which states to keep track of.
